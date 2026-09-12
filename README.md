@@ -8,7 +8,7 @@ This repository is the official implementation of **SkillRet: A Benchmark for AI
 
 📄 **Paper**: [SkillRet: A Large-Scale Benchmark for Skill Retrieval in LLM Agents (arXiv:2605.05726)](https://arxiv.org/abs/2605.05726)
 
-Given a natural-language user query (e.g., *"Can you review my staged changes before I commit?"*), the task is to retrieve the most relevant skill(s) from a library of 6,660 AI agent skills collected from open-source repositories.
+Given a natural-language user query (e.g., *"Can you review my staged changes before I commit?"*), the task is to retrieve the most relevant skill(s) from a library of 6,006 AI agent skills collected from open-source repositories.
 
 ## Requirements
 
@@ -47,11 +47,23 @@ All models are loaded by their HuggingFace ID and **downloaded automatically** o
 The benchmark dataset is hosted on HuggingFace:
 [ThakiCloud/SKILLRET](https://huggingface.co/datasets/ThakiCloud/SKILLRET)
 
+> **Dataset version note.** The test split was revised after the paper's original
+> evaluation. The published dataset now contains 6,006 test skills, 4,392 test queries
+> and 7,187 test labels; the original evaluation used 6,660 / 4,997 / 8,347. Benchmark
+> scores further down this page were produced on that **original** split and are not
+> convertible to the current one — do not compare the two directly. The train split is
+> unchanged.
+>
+> The Hub head is mutable, so an unpinned run is not reproducible. Pin the revision you
+> evaluate on (see [Loading the data](#loading-the-data)). The study *Where
+> Post-Training Quantization Breaks Text Embedders* pins revision `a050ad2`, which is
+> the current head at the time of writing.
+
 | Subset  | Split | Records | Description                           |
 |---------|-------|--------:|---------------------------------------|
-| skills  | test  |   6,660 | Evaluation skill corpus               |
-| queries | test  |   4,997 | Evaluation queries (Claude Opus 4.6)  |
-| qrels   | test  |   8,347 | Binary relevance labels               |
+| skills  | test  |   6,006 | Evaluation skill corpus               |
+| queries | test  |   4,392 | Evaluation queries (Claude Opus 4.6)  |
+| qrels   | test  |   7,187 | Binary relevance labels               |
 | skills  | train |  10,123 | Training skill corpus                 |
 | queries | train |  63,259 | Training queries (Qwen3.5-122B-A10B)  |
 | qrels   | train | 127,190 | Training relevance labels             |
@@ -67,9 +79,22 @@ results = eval_retrieval(model_path="Qwen/Qwen3-Embedding-8B")
 
 # Or load data directly:
 from skillret.eval import load_corpus, load_queries
-skills = load_corpus()    # 6,660 skills (test split)
-queries = load_queries()  # 4,997 queries (test split)
+skills = load_corpus()    # 6,006 skills (test split)
+queries = load_queries()  # 4,392 queries (test split)
+
+# Pin the Hub revision so the run is reproducible:
+skills = load_corpus(revision="a050ad2")
+queries = load_queries(revision="a050ad2")
 ```
+
+Every entry point also honours the `SKILLRET_DATASET_REVISION` environment variable, which
+pins the revision without touching call sites:
+
+```bash
+SKILLRET_DATASET_REVISION=a050ad2 bash scripts/run_eval_embedding.sh
+```
+
+Unset, it resolves to the Hub head, which is the previous behaviour.
 
 ## Evaluation
 
@@ -163,6 +188,9 @@ Key training settings: BCE loss, per-positive grouping, 1 epoch, ~6h on 8× B200
 | SKILLRET-Reranker-0.6B | Reranker | ThakiCloud/SKILLRET-Reranker-0.6B |
 
 ## Results
+
+> Produced on the original 6,660-skill / 4,997-query test split, not on the split the
+> dataset publishes today. See the [dataset version note](#dataset).
 
 ### Embedding Retrieval
 

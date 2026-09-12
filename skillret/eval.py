@@ -44,7 +44,20 @@ apply_transformers_compat_patches()
 # Data loading (HuggingFace datasets)
 # ---------------------------------------------------------------------------
 
-def _load_hf_dataset(subset: str, split: str = "test") -> list[dict]:
+def _dataset_revision(revision: str | None = None) -> str | None:
+    """Which Hub revision to pull.
+
+    The Hub head is mutable, so an unpinned evaluation is not reproducible: the
+    numbers you get depend on when you ran it. Pass ``revision`` explicitly, or
+    set ``SKILLRET_DATASET_REVISION``, to pin it. Default stays unpinned so that
+    existing callers keep their current behaviour.
+    """
+    return revision or os.getenv("SKILLRET_DATASET_REVISION") or None
+
+
+def _load_hf_dataset(
+    subset: str, split: str = "test", revision: str | None = None
+) -> list[dict]:
     """Load a subset/split from HuggingFace, caching automatically."""
     try:
         from datasets import load_dataset
@@ -52,7 +65,9 @@ def _load_hf_dataset(subset: str, split: str = "test") -> list[dict]:
         raise ImportError(
             "The 'datasets' package is required. Install with: pip install datasets"
         )
-    ds = load_dataset(HF_DATASET_ID, subset, split=split)
+    ds = load_dataset(
+        HF_DATASET_ID, subset, split=split, revision=_dataset_revision(revision)
+    )
     return [dict(row) for row in ds]
 
 
@@ -69,9 +84,9 @@ def _embedding_text_for_skill(skill: dict) -> str:
     return build_skill_text(skill)
 
 
-def load_corpus(split: str = "test") -> list[dict]:
+def load_corpus(split: str = "test", revision: str | None = None) -> list[dict]:
     """Load skill corpus from HuggingFace."""
-    skills = _load_hf_dataset("skills", split=split)
+    skills = _load_hf_dataset("skills", split=split, revision=revision)
 
     for s in skills:
         if "skill_md" not in s or not (s.get("skill_md") or "").strip():
@@ -79,9 +94,9 @@ def load_corpus(split: str = "test") -> list[dict]:
     return skills
 
 
-def load_queries(split: str = "test") -> list[dict]:
+def load_queries(split: str = "test", revision: str | None = None) -> list[dict]:
     """Load queries from HuggingFace."""
-    return _load_hf_dataset("queries", split=split)
+    return _load_hf_dataset("queries", split=split, revision=revision)
 
 
 def _normalize_query_labels(item: dict) -> list[dict]:
