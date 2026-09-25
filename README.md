@@ -185,46 +185,42 @@ Key training settings: BCE loss, per-positive grouping, 1 epoch, ~6h on 8× B200
 |-------|------|-------------|
 | SKILLRET-Embedding-0.6B | Embedding | [ThakiCloud/SKILLRET-Embedding-0.6B](https://huggingface.co/ThakiCloud/SKILLRET-Embedding-0.6B) |
 | SKILLRET-Embedding-8B | Embedding | [ThakiCloud/SKILLRET-Embedding-8B](https://huggingface.co/ThakiCloud/SKILLRET-Embedding-8B) |
-| SKILLRET-Reranker-0.6B | Reranker | ThakiCloud/SKILLRET-Reranker-0.6B |
+| SKILLRET-Reranker-0.6B | Reranker | [ThakiCloud/SKILLRET-Reranker-0.6B](https://huggingface.co/ThakiCloud/SKILLRET-Reranker-0.6B) |
 
 ## Results
 
-> Produced on the original 6,660-skill / 4,997-query test split, not on the split the
-> dataset publishes today. See the [dataset version note](#dataset).
+> Evaluated on the current test split (6,006 skills, 4,392 queries), matching the paper.
+> See the [dataset version note](#dataset) for the earlier split.
 
 ### Embedding Retrieval
 
 | Model | Params | NDCG@5 | NDCG@10 | Recall@10 | Comp.@10 |
 |-------|--------|--------|---------|-----------|----------|
-| BM25 | -- | 46.47 | 48.86 | 56.55 | 41.09 |
-| bge-small-en-v1.5 | 33M | 49.62 | 51.68 | 57.47 | 40.72 |
-| snowflake-arctic-embed-s | 33M | 51.01 | 52.99 | 58.84 | 42.48 |
-| e5-small-v2 | 118M | 39.83 | 41.82 | 48.65 | 34.02 |
-| e5-large-v2 | 335M | 48.01 | 50.21 | 57.42 | 41.95 |
-| bge-large-en-v1.5 | 335M | 53.75 | 55.82 | 61.40 | 44.63 |
-| F2LLM-v2-80M | 80M | 43.32 | 45.52 | 52.24 | 36.66 |
-| harrier-oss-v1-270m | 270M | 58.83 | 61.17 | 67.61 | 51.11 |
-| pplx-embed-v1-0.6b | 0.6B | 48.11 | 50.72 | 60.03 | 44.07 |
-| Qwen3-Embedding-0.6B | 0.6B | 56.23 | 58.35 | 64.89 | 47.27 |
-| jina-embeddings-v5-text-small | 0.6B | 57.21 | 59.50 | 65.77 | 49.03 |
-| harrier-oss-v1-0.6b | 0.6B | 64.24 | 66.55 | 73.09 | 57.37 |
-| NV-Embed-v1 | 7B | 50.71 | 53.12 | 60.96 | 43.87 |
-| Qwen3-Embedding-8B | 8B | 57.57 | 59.98 | 67.06 | 50.01 |
-| Octen-Embedding-8B | 8B | 60.35 | 62.56 | 68.17 | 51.31 |
-| KaLM-Gemma3-12B | 12B | 52.68 | 55.38 | 63.94 | 47.85 |
-| **[SKILLRET-Embedding-0.6B](https://huggingface.co/ThakiCloud/SKILLRET-Embedding-0.6B) (ours)** | 0.6B | 75.57 | 78.03 | 85.42 | 75.09 |
-| **[SKILLRET-Embedding-8B](https://huggingface.co/ThakiCloud/SKILLRET-Embedding-8B) (ours)** | 8B | **81.23** | **83.45** | **91.23** | **84.63** |
+| BM25 | -- | 49.31 | 51.69 | 59.41 | 44.56 |
+| bge-small-en-v1.5 | 33M | 52.57 | 54.51 | 60.01 | 43.97 |
+| snowflake-arctic-embed-s | 33M | 54.48 | 56.39 | 61.96 | 46.22 |
+| e5-small-v2 | 118M | 42.63 | 44.66 | 51.59 | 37.45 |
+| e5-large-v2 | 335M | 51.30 | 53.41 | 60.55 | 45.45 |
+| bge-large-en-v1.5 | 335M | 57.04 | 59.00 | 64.37 | 48.34 |
+| F2LLM-v2-80M | 80M | 46.26 | 48.22 | 54.86 | 39.82 |
+| harrier-oss-v1-270m | 270M | 62.42 | 64.56 | 70.80 | 55.37 |
+| pplx-embed-v1-0.6b | 0.6B | 51.71 | 54.26 | 63.60 | 48.27 |
+| Qwen3-Embedding-0.6B | 0.6B | 59.92 | 61.94 | 67.87 | 51.09 |
+| jina-embeddings-v5-text-small | 0.6B | 60.85 | 62.96 | 68.99 | 53.26 |
+| harrier-oss-v1-0.6b | 0.6B | 68.16 | 70.26 | 76.16 | 61.61 |
+| NV-Embed-v1 | 7B | 54.62 | 57.03 | 64.64 | 48.00 |
+| Qwen3-Embedding-8B | 8B | 61.35 | 63.64 | 70.29 | 54.14 |
+| Octen-Embedding-8B | 8B | 64.00 | 65.93 | 71.07 | 55.35 |
+| KaLM-Gemma3-12B | 12B | 56.31 | 58.95 | 67.56 | 52.37 |
+| **[SKILLRET-Embedding-0.6B](https://huggingface.co/ThakiCloud/SKILLRET-Embedding-0.6B) (ours)** | 0.6B | 79.02 | 81.12 | 87.74 | 78.94 |
+| **[SKILLRET-Embedding-8B](https://huggingface.co/ThakiCloud/SKILLRET-Embedding-8B) (ours)** | 8B | **84.58** | **86.44** | **93.25** | **88.11** |
 
-### Reranking (SkillRet-Embedding-0.6B top-20)
+### Reranking (SkillRet-Embedding-8B top-20)
 
 | Reranker | NDCG@5 | NDCG@10 | Recall@10 | Comp.@10 |
 |----------|--------|---------|-----------|----------|
-| *Embed only* | 75.57 | 78.03 | 85.42 | 75.09 |
-| jina-reranker-v2 | 69.92 | 73.14 | 83.93 | 73.06 |
-| Qwen3-Reranker-0.6B | 72.84 | 75.81 | 85.86 | 75.48 |
-| Qwen3-Reranker-4B | 73.24 | 76.20 | 86.18 | 76.09 |
-| Qwen3-Reranker-8B | 73.21 | 76.09 | 86.48 | 76.53 |
-| **SkillRet-Reranker-0.6B (ours)** | **80.71** | **82.18** | **87.61** | **78.95** |
+| *Embed only* | 84.58 | 86.44 | 93.25 | 88.11 |
+| **[SkillRet-Reranker-0.6B](https://huggingface.co/ThakiCloud/SKILLRET-Reranker-0.6B) (ours)** | **86.10** | **87.74** | **93.57** | **88.96** |
 
 ## Repository Structure
 
