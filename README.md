@@ -259,9 +259,9 @@ All metrics computed via `pytrec_eval` at k={5, 10, 15}:
 If you use SkillRet, please cite:
 
 ```bibtex
-@article{cho2026skillret,
+@article{kang2026skillret,
   title   = {SkillRet: A Large-Scale Benchmark for Skill Retrieval in LLM Agents},
-  author  = {Cho, Hongcheol and Kang, Ryangkyung and Kim, Youngeun},
+  author  = {Kang, Ryangkyung and Cho, Hongcheol and Kim, Youngeun},
   journal = {arXiv preprint arXiv:2605.05726},
   year    = {2026},
   url     = {https://arxiv.org/abs/2605.05726}
