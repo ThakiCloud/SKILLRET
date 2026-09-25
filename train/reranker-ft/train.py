@@ -139,6 +139,7 @@ def load_config(path: str) -> dict:
         "wandb_run": None,
         "num_negatives": 7,
         "hard_negatives_file": None,
+        "hard_negatives_files": None,
         "hard_neg_skip_top": 20,
         "hard_neg_top_k": 60,
         "per_positive_negatives": False,
@@ -146,8 +147,12 @@ def load_config(path: str) -> dict:
         "load_best_model_at_end": True,
         "embedding_model": None,
         "eval_first_stage_file": "results/embed/ThakiCloud_SKILLRET-Embedding-0.6B.json",
+        "eval_max_queries": 500,
+        "eval_batch_size": 16,
         "loss_type": "pointwise",
         "fixed_group_size": None,
+        "early_stopping_patience": 0,
+        "early_stopping_min_delta": 0.001,
     }
     for k, v in defaults.items():
         cfg.setdefault(k, v)
@@ -164,6 +169,13 @@ def load_config(path: str) -> dict:
     hn = cfg.get("hard_negatives_file")
     if hn and not Path(hn).is_absolute():
         cfg["hard_negatives_file"] = str(PROJECT_ROOT / hn)
+
+    hn_files = cfg.get("hard_negatives_files")
+    if hn_files:
+        cfg["hard_negatives_files"] = [
+            str(PROJECT_ROOT / p) if not Path(p).is_absolute() else p
+            for p in hn_files
+        ]
 
     return cfg
 
@@ -212,6 +224,7 @@ def mine_hard_negatives(
     embedding_model: str,
     keep_top: int = 100,
     output_file: Path | None = None,
+    encode_batch_size: int = 32,
 ) -> dict[str, list[str]]:
     """Mine hard negatives using a first-stage embedding model.
 
@@ -249,13 +262,13 @@ def mine_hard_negatives(
 
         logger.info("Encoding skills...")
         skill_embs = st_model.encode_multi_process(
-            skill_texts, pool, batch_size=32, normalize_embeddings=True,
+            skill_texts, pool, batch_size=encode_batch_size, normalize_embeddings=True,
         )
         from skillret.config import SKILL_QUERY_PROMPT
         query_texts = [SKILL_QUERY_PROMPT + q["query"] for q in queries]
         logger.info("Encoding queries...")
         query_embs = st_model.encode_multi_process(
-            query_texts, pool, batch_size=32, normalize_embeddings=True,
+            query_texts, pool, batch_size=encode_batch_size, normalize_embeddings=True,
         )
         st_model.stop_multi_process_pool(pool)
     else:
@@ -264,13 +277,13 @@ def mine_hard_negatives(
 
         logger.info("Encoding skills...")
         skill_embs = st_model.encode(
-            skill_texts, batch_size=64, show_progress_bar=True,
+            skill_texts, batch_size=encode_batch_size, show_progress_bar=True,
             convert_to_numpy=True, normalize_embeddings=True,
         )
         query_texts = [q["query"] for q in queries]
         logger.info("Encoding queries...")
         query_embs = st_model.encode(
-            query_texts, batch_size=64, show_progress_bar=True,
+            query_texts, batch_size=encode_batch_size, show_progress_bar=True,
             convert_to_numpy=True, normalize_embeddings=True,
             prompt=SKILL_QUERY_PROMPT,
         )
@@ -332,6 +345,7 @@ def build_train_dataset(
     fixed_group_size: int | None = None,
     random_neg_sampling: bool = False,
     shared_neg_sampling: bool = False,
+    extra_hard_negatives: list[dict[str, list[str]]] | None = None,
 ) -> Dataset:
     """Build (query, document, label) pairs for reranker training.
 
@@ -356,6 +370,12 @@ def build_train_dataset(
     then reuses that same set for every GT group of the query.  This combines
     random diversity (avoiding a homogeneous top-K cluster) with the 3x gradient
     reinforcement benefit of consistent negatives across GT groups.
+
+    When ``extra_hard_negatives`` is provided (a list of additional hard-negative
+    dicts from other embedding models), the candidates from each source are sliced
+    with the same ``hard_neg_skip_top`` / ``hard_neg_top_k`` window independently,
+    then unioned with the primary ``hard_negatives`` pool.  This gives a more
+    diverse candidate pool that covers failures of multiple embedding models.
     """
     if do_merge_queries:
         queries = merge_queries(queries)
@@ -383,6 +403,21 @@ def build_train_dataset(
             ranked = ranked[hard_neg_skip_top:end_idx]
             hn_ids = [sid for sid in ranked
                       if sid not in gt_ids and sid in skill_lookup]
+
+        # Union hard negatives from extra embedding sources (each sliced with the
+        # same skip/top_k window, then deduplicated against the primary pool and GTs).
+        if extra_hard_negatives:
+            seen = set(hn_ids) | gt_ids
+            for extra_hn in extra_hard_negatives:
+                if qid not in extra_hn:
+                    continue
+                extra_ranked = extra_hn[qid]
+                end_idx = hard_neg_top_k if hard_neg_top_k else len(extra_ranked)
+                extra_ranked = extra_ranked[hard_neg_skip_top:end_idx]
+                for sid in extra_ranked:
+                    if sid not in seen and sid in skill_lookup:
+                        hn_ids.append(sid)
+                        seen.add(sid)
 
         # shared_neg_sampling: sample once per query, reuse for all GT groups.
         # Gives random diversity while preserving 3x gradient reinforcement.
@@ -460,11 +495,15 @@ def build_train_dataset(
                 effective_neg = max(1, fixed_group_size - n_pos_this)
 
             neg_ids = []
-            for hn_sid in hn_ids:
-                if len(neg_ids) >= effective_neg:
-                    break
-                neg_ids.append(hn_sid)
-                hard_used += 1
+            if (shared_neg_sampling or random_neg_sampling) and len(hn_ids) >= effective_neg:
+                neg_ids = rng.sample(hn_ids, effective_neg)
+                hard_used += len(neg_ids)
+            else:
+                for hn_sid in hn_ids:
+                    if len(neg_ids) >= effective_neg:
+                        break
+                    neg_ids.append(hn_sid)
+                    hard_used += 1
 
             while len(neg_ids) < effective_neg:
                 neg_id = rng.choice(all_skill_ids)
@@ -495,6 +534,10 @@ def build_train_dataset(
             f"top_k={hard_neg_top_k or 'all'}, "
             f"used={hard_used:,}, random_fill={random_used:,}"
         )
+        if extra_hard_negatives:
+            logger.info(
+                f"  Multi-source pool: 1 primary + {len(extra_hard_negatives)} extra source(s)"
+            )
 
     return Dataset.from_dict(
         {"query": rows_query, "document": rows_doc, "label": rows_label,
@@ -594,6 +637,18 @@ class RerankerTrainer(Trainer):
         super().__init__(**kwargs)
         self.token_true_id = token_true_id
         self.token_false_id = token_false_id
+
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+        """Skip Trainer eval_loss entirely — TrecEvalCallback computes all metrics.
+
+        Only fires on_evaluate callbacks (which run TrecEvalCallback → NDCG).
+        Nothing is logged to wandb from the Trainer side; our wandb.log() call
+        in TrecEvalCallback handles all metric reporting.
+        """
+        self.control = self.callback_handler.on_evaluate(
+            self.args, self.state, self.control, metrics={}
+        )
+        return {}
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
@@ -777,8 +832,12 @@ class ListwiseRerankerTrainer(RerankerTrainer):
             pos_mask = g_labels.bool()
             if not pos_mask.any():
                 continue
+            # Multi-positive distribution: uniform mass over all positives, 0 for negatives.
+            # Using one-hot CE per positive (old approach) hurts because positives inflate
+            # each other's denominator. The correct target is a soft distribution.
+            target = g_labels.float() / g_labels.sum()
             log_probs = F.log_softmax(g_scores, dim=0)
-            group_losses.append(-log_probs[pos_mask].mean())
+            group_losses.append(-(target * log_probs).sum())
 
         if not group_losses:
             loss = ranking_scores.sum() * 0.0  # differentiable zero
@@ -814,11 +873,24 @@ class TrecEvalCallback(TrainerCallback):
         from_top_k: int = 20,
         max_queries: int = 500,
         seed: int = 43,
+        early_stopping_patience: int = 0,
+        early_stopping_min_delta: float = 0.001,
+        eval_steps: int = 100,
     ):
         self.collator = collator
         self.token_true_id = token_true_id
         self.token_false_id = token_false_id
         self.batch_size = batch_size
+        self.eval_steps = eval_steps
+        self.early_stopping_patience = early_stopping_patience
+        self.early_stopping_min_delta = early_stopping_min_delta
+        self._es_best_ndcg = -1.0
+        self._es_counter = 0
+        # Best-checkpoint tracking (independent of early stopping). Updated on
+        # every eval so that final/ can be saved from the best step rather than
+        # the last (often overfit) step. See best-checkpoint save in main().
+        self.best_ndcg = -1.0
+        self.best_step: int | None = None
 
         queries = load_eval_queries()
         skills = load_eval_skills()
@@ -892,6 +964,8 @@ class TrecEvalCallback(TrainerCallback):
 
     @torch.no_grad()
     def _score_pairs(self, model, pairs: list[dict]) -> list[float]:
+        # Returns log-odds (true_v - false_v) per pair: ranks identically to
+        # p_yes for trec_eval (monotonic) and feeds listwise CE eval loss.
         raw = model.module if hasattr(model, "module") else model
         scores = []
         for i in range(0, len(pairs), self.batch_size):
@@ -903,9 +977,7 @@ class TrecEvalCallback(TrainerCallback):
             last_logits = raw.lm_head(last_hidden).squeeze(1)
             true_v = last_logits[:, self.token_true_id]
             false_v = last_logits[:, self.token_false_id]
-            stacked = torch.stack([false_v, true_v], dim=1)
-            probs = F.log_softmax(stacked, dim=1)[:, 1].exp()
-            scores.extend(probs.cpu().tolist())
+            scores.extend((true_v - false_v).float().cpu().tolist())
         return scores
 
     def _evaluate(self, model) -> dict[str, float]:
@@ -923,25 +995,159 @@ class TrecEvalCallback(TrainerCallback):
 
         return trec_eval(qrels=self.qrels, results=results)
 
+    def on_step_end(self, args, state, control, **kwargs):
+        """Trigger evaluation at eval_steps intervals (since eval_strategy='no')."""
+        if state.global_step > 0 and state.global_step % self.eval_steps == 0:
+            control.should_evaluate = True
+        return control
+
     def on_evaluate(self, args, state, control, model=None, **kwargs):
         if model is None:
             return
+
+        import torch.distributed as dist
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+
         model.eval()
-        metrics = self._evaluate(model)
+
+        # Sync all ranks before scoring — ensures all ranks start scoring at the same
+        # time regardless of how long the Trainer's distributed eval_loss took per rank.
+        # Since shards are equal-sized (4997//8 = 624-625 queries), all ranks finish
+        # scoring at roughly the same time, so all_gather_object completes in seconds.
+        if is_dist:
+            logger.info(f"[TrecEval rank {rank}] waiting at barrier before scoring...")
+            dist.barrier()
+            logger.info(f"[TrecEval rank {rank}] barrier passed, starting scoring ({len(self.eval_samples) // world_size + (1 if rank < len(self.eval_samples) % world_size else 0)} queries)")
+
+        from tqdm import tqdm as _tqdm
+        if world_size > 1:
+            shard = self.eval_samples[rank::world_size]
+            local_results: dict[str, dict[str, float]] = {}
+            for i, s in enumerate(shard):
+                if i % 100 == 0:
+                    logger.info(f"[TrecEval rank {rank}] scoring {i}/{len(shard)} queries...")
+                pairs = [{"query": s["query"], "document": d, "label": 0}
+                         for d in s["candidate_texts"]]
+                scores = self._score_pairs(model, pairs)
+                local_results[s["qid"]] = {
+                    str(sid): float(sc)
+                    for sid, sc in zip(s["candidate_ids"], scores)
+                }
+            logger.info(f"[TrecEval rank {rank}] scoring done, calling all_gather_object...")
+            gathered = [None] * world_size
+            dist.all_gather_object(gathered, local_results)
+            if rank != 0:
+                # Wait for rank 0 to broadcast the early-stopping decision, then exit.
+                stop_flag = [False]
+                dist.broadcast_object_list(stop_flag, src=0)
+                control.should_training_stop = stop_flag[0]
+                return
+            full_results: dict[str, dict[str, float]] = {}
+            for r in gathered:
+                full_results.update(r)
+        else:
+            full_results = {}
+            for s in _tqdm(self.eval_samples, desc="TrecEval scoring", leave=False):
+                pairs = [{"query": s["query"], "document": d, "label": 0}
+                         for d in s["candidate_texts"]]
+                scores = self._score_pairs(model, pairs)
+                full_results[s["qid"]] = {
+                    str(sid): float(sc)
+                    for sid, sc in zip(s["candidate_ids"], scores)
+                }
+
+        from skillret.eval import trec_eval
+        metrics = trec_eval(qrels=self.qrels, results=full_results)
+
+        # Listwise CE over the full benchmark, reusing the same scores we
+        # ranked. Per-query mean (each query weighted equally — matches NDCG
+        # averaging). Replaces the brittle Phase-1 eval_loss path.
+        total_loss, n_queries = 0.0, 0
+        for s in self.eval_samples:
+            qid = s["qid"]
+            if qid not in full_results:
+                continue
+            qrels_for_q = self.qrels.get(qid, {})
+            cand_ids = s["candidate_ids"]
+            cand_scores = torch.tensor(
+                [full_results[qid][str(sid)] for sid in cand_ids],
+                dtype=torch.float32,
+            )
+            cand_labels = torch.tensor(
+                [1.0 if qrels_for_q.get(str(sid), 0) > 0 else 0.0
+                 for sid in cand_ids],
+                dtype=torch.float32,
+            )
+            if cand_labels.sum() == 0:
+                continue
+            target = cand_labels / cand_labels.sum()
+            log_probs = F.log_softmax(cand_scores, dim=0)
+            total_loss += -(target * log_probs).sum().item()
+            n_queries += 1
+        eval_loss = total_loss / n_queries if n_queries > 0 else 0.0
 
         ndcg10 = metrics.get("NDCG@10", 0.0)
         map10 = metrics.get("MAP@10", 0.0)
         recall10 = metrics.get("Recall@10", 0.0)
         logger.info(
             f"[Eval step {state.global_step}] benchmark  "
-            f"NDCG@10={ndcg10:.4f}  MAP@10={map10:.4f}  Recall@10={recall10:.4f}"
+            f"loss={eval_loss:.4f}  NDCG@10={ndcg10:.4f}  "
+            f"MAP@10={map10:.4f}  Recall@10={recall10:.4f}"
         )
 
+        # Track the best step by NDCG@10 (rank 0 only, where full_results live)
+        # so main() can save final/ from the best checkpoint instead of the last.
+        if ndcg10 > self.best_ndcg:
+            self.best_ndcg = ndcg10
+            self.best_step = state.global_step
+            logger.info(f"[BestCkpt] new best NDCG@10={ndcg10:.4f} at step {state.global_step}")
+
         if state.log_history is not None:
-            log_entry = {"step": state.global_step}
+            log_entry = {
+                "step": state.global_step,
+                "eval_benchmark_loss": eval_loss,
+            }
             for k, v in metrics.items():
                 log_entry[f"eval_benchmark_{k.lower()}"] = v
             state.log_history.append(log_entry)
+
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb_log = {"eval/benchmark_loss": eval_loss, "eval/global_step": state.global_step}
+                for k, v in metrics.items():
+                    wandb_log[f"eval/{k.replace('@', '_at_').lower()}"] = v
+                wandb.log(wandb_log)
+        except Exception as e:
+            logger.warning(f"[TrecEval rank 0] wandb.log failed: {e}")
+
+        if self.early_stopping_patience > 0:
+            if ndcg10 > self._es_best_ndcg + self.early_stopping_min_delta:
+                self._es_best_ndcg = ndcg10
+                self._es_counter = 0
+            else:
+                self._es_counter += 1
+                logger.info(
+                    f"[EarlyStopping] No improvement ≥{self.early_stopping_min_delta} "
+                    f"({self._es_counter}/{self.early_stopping_patience}), "
+                    f"best NDCG@10={self._es_best_ndcg:.4f}"
+                )
+                if self._es_counter >= self.early_stopping_patience:
+                    logger.info(
+                        f"[EarlyStopping] Patience exhausted — stopping training at step {state.global_step}. "
+                        f"Best NDCG@10={self._es_best_ndcg:.4f}"
+                    )
+                    control.should_training_stop = True
+
+        # Broadcast should_training_stop from rank 0 to all ranks so every DDP
+        # process stops cleanly without hitting NCCL collective timeouts.
+        if is_dist:
+            stop_flag = [control.should_training_stop]
+            dist.broadcast_object_list(stop_flag, src=0)
+            control.should_training_stop = stop_flag[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -983,7 +1189,7 @@ def main():
         if not emb_model:
             raise ValueError(
                 "Set 'embedding_model' in config for hard-negative mining "
-                "(e.g. ThakiCloud/SKILLRET-Embedding-8B)"
+                "(e.g. Thaki/SkillRet-Embedding-8B)"
             )
         model_base = os.environ.get("MODEL_BASE_DIR", "")
         if model_base:
@@ -998,6 +1204,7 @@ def main():
             embedding_model=emb_model,
             keep_top=cfg.get("mine_keep_top", 100),
             output_file=Path(hn_path),
+            encode_batch_size=cfg.get("mine_encode_batch_size", 32),
         )
         return
 
@@ -1049,6 +1256,27 @@ def main():
             hard_negatives = json.load(f)
         logger.info(f"  Hard negatives for {len(hard_negatives):,} queries")
 
+    extra_hard_negatives: list[dict] = []
+    hn_files = cfg.get("hard_negatives_files")
+    if hn_files:
+        # First file becomes the primary source; the rest are extra sources.
+        for i, path in enumerate(hn_files):
+            if not Path(path).exists():
+                logger.warning(f"Hard negatives file not found, skipping: {path}")
+                continue
+            logger.info(f"Loading hard negatives [{i}] from {path}...")
+            with open(path) as f:
+                hn_data = json.load(f)
+            logger.info(f"  Hard negatives for {len(hn_data):,} queries")
+            if hard_negatives is None:
+                hard_negatives = hn_data
+            else:
+                extra_hard_negatives.append(hn_data)
+        if extra_hard_negatives:
+            logger.info(
+                f"Multi-source hard negatives: 1 primary + {len(extra_hard_negatives)} extra source(s)"
+            )
+
     logger.info("  Downloading/loading queries dataset...")
     train_queries = load_train_queries()
     logger.info(f"  {len(train_queries):,} queries loaded")
@@ -1066,22 +1294,36 @@ def main():
         fixed_group_size=cfg["fixed_group_size"],
         random_neg_sampling=cfg.get("random_neg_sampling", False),
         shared_neg_sampling=cfg.get("shared_neg_sampling", False),
+        extra_hard_negatives=extra_hard_negatives if extra_hard_negatives else None,
     )
 
     # ── Evaluator ──────────────────────────────────────────────────────────
     fs_file = cfg["eval_first_stage_file"]
     if not Path(fs_file).is_absolute():
         fs_file = str(PROJECT_ROOT / fs_file)
-    logger.info(f"Building trec_eval evaluator (first-stage: {Path(fs_file).name}, 500 query sample)...")
+    eval_max_queries = cfg.get("eval_max_queries", 500)
+    eval_label = f"{eval_max_queries} query sample" if eval_max_queries else "full eval set"
+    logger.info(f"Building trec_eval evaluator (first-stage: {Path(fs_file).name}, {eval_label})...")
+    eval_batch_size = cfg.get("eval_batch_size", 16)
+    es_patience = cfg.get("early_stopping_patience", 0)
+    es_min_delta = cfg.get("early_stopping_min_delta", 0.001)
+    if es_patience > 0:
+        logger.info(
+            f"Early stopping enabled: patience={es_patience} eval steps, "
+            f"min_delta={es_min_delta} NDCG@10"
+        )
     eval_callback = TrecEvalCallback(
         first_stage_file=fs_file,
         collator=collator,
         token_true_id=token_true_id,
         token_false_id=token_false_id,
-        batch_size=16,
+        batch_size=eval_batch_size,
         from_top_k=20,
-        max_queries=500,
+        max_queries=eval_max_queries,
         seed=seed,
+        early_stopping_patience=es_patience,
+        early_stopping_min_delta=es_min_delta,
+        eval_steps=cfg["eval_steps"],
     )
 
     eval_dataset = eval_callback.to_dataset()
@@ -1108,14 +1350,12 @@ def main():
         fp16=False,
         bf16=cfg["bf16"],
         ddp_find_unused_parameters=False,
-        eval_strategy="steps",
-        eval_steps=cfg["eval_steps"],
+        eval_strategy="no",   # TrecEvalCallback triggers eval via on_step_end
         save_strategy="steps",
         save_steps=cfg["save_steps"],
         save_total_limit=cfg.get("save_total_limit", 300),
         logging_steps=cfg["logging_steps"],
-        load_best_model_at_end=cfg["load_best_model_at_end"],
-        metric_for_best_model="eval_loss" if cfg["load_best_model_at_end"] else None,
+        load_best_model_at_end=False,  # eval runs in TrecEvalCallback; final/ is saved from the best NDCG@10 checkpoint in main()
         dataloader_num_workers=4,
         report_to="wandb",
         run_name=wandb_run,
@@ -1133,7 +1373,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        eval_dataset=None,  # evaluate() is overridden to skip eval_loss; TrecEvalCallback handles all evaluation
         data_collator=collator,
         processing_class=tokenizer,
         callbacks=[eval_callback],
@@ -1155,12 +1395,46 @@ def main():
     trainer.train(resume_from_checkpoint=resume_ckpt)
 
     if rank == 0:
-        final_dir = str(Path(cfg["output_dir"]) / "final")
-        logger.info(f"Saving final model to {final_dir}...")
-        raw = model.module if hasattr(model, "module") else model
-        raw.save_pretrained(final_dir)
-        tokenizer.save_pretrained(final_dir)
-        logger.info("Done!")
+        final_dir = Path(cfg["output_dir"]) / "final"
+
+        # Determine the best step by NDCG@10. Prefer trainer.state.log_history
+        # (persisted across resumes) so the best is found even if the run was
+        # resumed after the peak; fall back to the callback's in-memory tracker.
+        best_step, best_ndcg = None, -1.0
+        for h in trainer.state.log_history:
+            v = h.get("eval_benchmark_ndcg@10")
+            if v is not None and v > best_ndcg:
+                best_ndcg, best_step = v, h.get("step")
+        if best_step is None and eval_callback.best_step is not None:
+            best_step, best_ndcg = eval_callback.best_step, eval_callback.best_ndcg
+
+        best_ckpt = (Path(cfg["output_dir"]) / f"checkpoint-{best_step}"
+                     if best_step is not None else None)
+        if best_ckpt is not None and best_ckpt.is_dir():
+            import shutil
+            logger.info(
+                f"Saving BEST model to {final_dir} "
+                f"(step {best_step}, NDCG@10={best_ndcg:.4f}) from {best_ckpt}..."
+            )
+            final_dir.mkdir(parents=True, exist_ok=True)
+            # Copy model + tokenizer files, excluding optimizer/scheduler/RNG/
+            # trainer state so final/ is a clean inference checkpoint.
+            skip = {"optimizer.pt", "scheduler.pt", "scaler.pt",
+                    "trainer_state.json", "training_args.bin"}
+            for f in best_ckpt.iterdir():
+                if f.is_dir() or f.name in skip or f.name.startswith("rng_state"):
+                    continue
+                shutil.copy2(f, final_dir / f.name)
+            logger.info(f"Done! (final/ = best checkpoint-{best_step})")
+        else:
+            logger.warning(
+                f"No best checkpoint found (best_step={best_step}); "
+                f"saving last in-memory model to {final_dir} instead."
+            )
+            raw = model.module if hasattr(model, "module") else model
+            raw.save_pretrained(str(final_dir))
+            tokenizer.save_pretrained(str(final_dir))
+            logger.info("Done!")
 
 
 if __name__ == "__main__":

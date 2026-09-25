@@ -26,6 +26,7 @@ from .config import (
     DEFAULT_RERANK_BATCH_SIZE,
     EMBEDDING_CACHE_DIR,
     HF_DATASET_ID,
+    LOCAL_DATA_DIR,
     RERANK_TOP_K,
     SKILL_RERANK_INSTRUCTION,
     get_batch_size,
@@ -58,7 +59,16 @@ def _dataset_revision(revision: str | None = None) -> str | None:
 def _load_hf_dataset(
     subset: str, split: str = "test", revision: str | None = None
 ) -> list[dict]:
-    """Load a subset/split from HuggingFace, caching automatically."""
+    """Load a subset/split, from ``SKILLRET_DATA_DIR`` if set else HuggingFace."""
+    if LOCAL_DATA_DIR is not None:
+        path = LOCAL_DATA_DIR / subset / f"{split}.jsonl"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"SKILLRET_DATA_DIR is set but {path} does not exist"
+            )
+        with open(path) as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
     try:
         from datasets import load_dataset
     except ImportError:
@@ -97,6 +107,40 @@ def load_corpus(split: str = "test", revision: str | None = None) -> list[dict]:
 def load_queries(split: str = "test", revision: str | None = None) -> list[dict]:
     """Load queries from HuggingFace."""
     return _load_hf_dataset("queries", split=split, revision=revision)
+
+
+def load_qrels(split: str = "test") -> Dict[str, Dict[str, int]] | None:
+    """Load graded qrels from ``SKILLRET_DATA_DIR/qrels/{split}.jsonl`` if present.
+
+    Returns ``{query_id: {skill_id: relevance}}`` preserving graded relevance
+    (e.g. 2=seed, 1=functionally-substitutable). Returns None when no local qrels
+    file exists, in which case callers fall back to query ``skill_ids`` (binary).
+    """
+    if LOCAL_DATA_DIR is None:
+        return None
+    path = LOCAL_DATA_DIR / "qrels" / f"{split}.jsonl"
+    if not path.is_file():
+        return None
+    qrels: Dict[str, Dict[str, int]] = {}
+    with open(path) as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            qrels.setdefault(str(r["query_id"]), {})[str(r["skill_id"])] = int(r["relevance"])
+    return qrels
+
+
+def _build_qrels(queries: list[dict], split: str) -> Dict[str, Dict[str, int]]:
+    """Prefer graded qrels file; else derive binary qrels from query skill_ids."""
+    graded = load_qrels(split)
+    if graded is not None:
+        return {q["id"]: graded.get(q["id"], {}) for q in queries}
+    qrels: Dict[str, Dict[str, int]] = {}
+    for item in queries:
+        labels = _normalize_query_labels(item)
+        qrels[item["id"]] = {str(x["id"]): int(x["relevance"]) for x in labels}
+    return qrels
 
 
 def _normalize_query_labels(item: dict) -> list[dict]:
@@ -473,7 +517,9 @@ def _try_load_embedding_index(
         return None
     if meta.get("version") != _CACHE_VERSION:
         return None
-    if meta.get("model_ref") != model_ref:
+    # Compare on the org/model tail so a cache stays valid when the same weights
+    # are served from a different mount point (e.g. /DATA2 -> /DATA1).
+    if _embedding_cache_name(meta.get("model_ref", "")) != _embedding_cache_name(model_ref):
         return None
     if meta.get("n_skills") != n_skills:
         return None
@@ -607,12 +653,7 @@ def eval_retrieval(
             if r >= 0
         }
 
-    qrels: Dict[str, Dict[str, int]] = {}
-    for item in queries:
-        labels = _normalize_query_labels(item)
-        qrels[item["id"]] = {
-            str(x["id"]): int(x["relevance"]) for x in labels
-        }
+    qrels = _build_qrels(queries, split)
 
     metrics = trec_eval(qrels=qrels, results=results)
     collection = {split: metrics}
@@ -670,12 +711,7 @@ def eval_bm25(
             if scores[0, i] > 0
         }
 
-    qrels: Dict[str, Dict[str, int]] = {}
-    for item in queries:
-        labels = _normalize_query_labels(item)
-        qrels[item["id"]] = {
-            str(x["id"]): int(x["relevance"]) for x in labels
-        }
+    qrels = _build_qrels(queries, split)
 
     metrics = trec_eval(qrels=qrels, results=results)
     collection = {split: metrics}
@@ -990,6 +1026,7 @@ def eval_rerank(
     output_file: str | None = None,
     rerank_batch_size: int = 0,
     split: str = "test",
+    oracle: bool = False,
 ) -> Dict[str, Dict[str, float]]:
     """Rerank first-stage retrieval results with a cross-encoder.
 
@@ -1001,10 +1038,42 @@ def eval_rerank(
         output_file: Optional path to save reranked results.
         rerank_batch_size: Batch size for reranker inference. 0 = auto-detect from config.
         split: Dataset split (default: "test").
+        oracle: If True, force every ground-truth skill missing from the top-k
+            candidate set into the reranking pool (Oracle upper bound). The pool
+            size is held at ``from_top_k``: each missing gold displaces the
+            lowest-scoring non-gold candidate, so the comparison against the
+            normal top-k reranking is apples-to-apples (same number of slots).
+            This removes first-stage recall as a bottleneck so the score
+            isolates the reranker's own ability to rank golds into the top.
 
     Returns:
         Dict mapping split -> metric dict.
     """
+    def _oracle_augment(item, candidate_skills):
+        """Insert missing gold skills into the top-k pool, keeping size fixed.
+
+        Missing golds replace the lowest-ranked non-gold candidates (the list is
+        already first-stage-score-descending), so |candidates| is unchanged.
+        """
+        if not oracle:
+            return candidate_skills
+        gt_ids = [str(l["id"]) for l in _normalize_query_labels(item)
+                  if int(l["relevance"]) > 0]
+        gt_set = set(gt_ids)
+        have = {str(s["id"]) for s in candidate_skills}
+        missing = [g for g in gt_ids if g not in have and g in skill_map]
+        if not missing:
+            return candidate_skills
+        # drop lowest-ranked non-gold candidates from the tail to free slots
+        kept, to_free = list(candidate_skills), len(missing)
+        i = len(kept) - 1
+        while i >= 0 and to_free > 0:
+            if str(kept[i]["id"]) not in gt_set:
+                kept.pop(i)
+                to_free -= 1
+            i -= 1
+        kept.extend(skill_map[g] for g in missing)
+        return kept
     device = _require_rerank_device()
     print(f"Rerank device: {device}")
     if rerank_batch_size <= 0:
@@ -1043,6 +1112,7 @@ def eval_rerank(
             candidate_skills = [
                 skill_map[sid] for sid, _ in sorted_candidates if sid in skill_map
             ]
+            candidate_skills = _oracle_augment(item, candidate_skills)
             if not candidate_skills:
                 result[qid] = {}
                 continue
@@ -1076,6 +1146,7 @@ def eval_rerank(
             candidate_skills = [
                 skill_map[sid] for sid, _ in sorted_candidates if sid in skill_map
             ]
+            candidate_skills = _oracle_augment(item, candidate_skills)
             if not candidate_skills:
                 result[qid] = {}
                 continue
@@ -1086,12 +1157,7 @@ def eval_rerank(
                 for s, sc in zip(candidate_skills, scores)
             }
 
-    qrels: Dict[str, Dict[str, int]] = {}
-    for item in queries:
-        labels = _normalize_query_labels(item)
-        qrels[item["id"]] = {
-            str(x["id"]): int(x["relevance"]) for x in labels
-        }
+    qrels = _build_qrels(queries, split)
 
     metrics = trec_eval(qrels=qrels, results=result)
     collection = {split: metrics}

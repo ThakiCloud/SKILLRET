@@ -1,11 +1,17 @@
+import os
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-# Per-model FAISS index + metadata.
-EMBEDDING_CACHE_DIR = DATA_DIR / "indexes"
+# Per-model FAISS index + metadata. Override with SKILLRET_INDEX_DIR so that
+# indexes built for different corpora do not overwrite each other.
+EMBEDDING_CACHE_DIR = Path(os.getenv("SKILLRET_INDEX_DIR") or (DATA_DIR / "indexes"))
 
 HF_DATASET_ID = "ThakiCloud/SKILLRET"
+
+# Local benchmark directory holding {skills,queries,qrels}/{split}.jsonl. When set,
+# it takes precedence over the HuggingFace dataset above.
+LOCAL_DATA_DIR = Path(os.getenv("SKILLRET_DATA_DIR")) if os.getenv("SKILLRET_DATA_DIR") else None
 
 
 SKILL_QUERY_PROMPT = "Instruct: Given a skill search query, retrieve relevant skills that match the query\nQuery: "
@@ -131,8 +137,6 @@ RERANKING_MODEL_CONFIG: dict[str, dict] = {
     "Qwen/Qwen3-Reranker-8B":                  {"batch_size": 4, "max_seq_length": 32768},
     "ThakiCloud/SKILLRET-Reranker-0.6B":        {"batch_size": 32, "max_seq_length": 32768},
     "pipizhao/SkillRouter-Reranker-0.6B":  {"batch_size": 32, "max_seq_length": 32768},
-    "ThakiCloud/SKILLRET-Reranker-0.6B-listwise-hn7-step700": {"batch_size": 32, "max_seq_length": 32768},
-    "ThakiCloud/SKILLRET-Reranker-0.6B-listwise-pp20-step800": {"batch_size": 32, "max_seq_length": 32768},
 }
 
 RERANKING_MODELS = list(RERANKING_MODEL_CONFIG.keys())

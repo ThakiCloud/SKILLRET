@@ -44,14 +44,19 @@ mkdir -p "$OUTPUT_DIR"
 # ---------------------------------------------------------------------------
 # First-stage embedding results to rerank
 # ---------------------------------------------------------------------------
+FIRST_STAGE_DIR="${FIRST_STAGE_DIR:-results/embed}"
+
 declare -A FIRST_STAGE_FILES
-FIRST_STAGE_FILES["Snowflake_snowflake-arctic-embed-s"]="results/embed/Snowflake_snowflake-arctic-embed-s.json"
-FIRST_STAGE_FILES["microsoft_harrier-oss-v1-270m"]="results/embed/microsoft_harrier-oss-v1-270m.json"
-FIRST_STAGE_FILES["microsoft_harrier-oss-v1-0.6b"]="results/embed/microsoft_harrier-oss-v1-0.6b.json"
-FIRST_STAGE_FILES["Qwen_Qwen3-Embedding-0.6B"]="results/embed/Qwen_Qwen3-Embedding-0.6B.json"
-FIRST_STAGE_FILES["Qwen_Qwen3-Embedding-8B"]="results/embed/Qwen_Qwen3-Embedding-8B.json"
-FIRST_STAGE_FILES["ThakiCloud_SKILLRET-Embedding-0.6B"]="results/embed/ThakiCloud_SKILLRET-Embedding-0.6B.json"
-FIRST_STAGE_FILES["ThakiCloud_SKILLRET-Embedding-8B"]="results/embed/ThakiCloud_SKILLRET-Embedding-8B.json"
+for tier in \
+    Snowflake_snowflake-arctic-embed-s \
+    microsoft_harrier-oss-v1-270m \
+    microsoft_harrier-oss-v1-0.6b \
+    Qwen_Qwen3-Embedding-0.6B \
+    Qwen_Qwen3-Embedding-8B \
+    ThakiCloud_SKILLRET-Embedding-0.6B \
+    ThakiCloud_SKILLRET-Embedding-8B ; do
+    FIRST_STAGE_FILES["$tier"]="${FIRST_STAGE_DIR}/${tier}.json"
+done
 
 # Filter and validate first-stage files
 VALID_FIRST_STAGES=()
