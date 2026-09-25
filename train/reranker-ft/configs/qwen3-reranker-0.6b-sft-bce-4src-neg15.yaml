@@ -1,0 +1,47 @@
+# SkillRet-Reranker-0.6B training config (released checkpoint)
+#
+# BCE pointwise (yes/no SFT) loss with per-positive grouping.
+# Hard negatives come from a pool merged from four retrievers
+# (SkillRet-Embedding-0.6B, SkillRet-Embedding-8B, Qwen3-Embedding-8B,
+# harrier-oss-v1-0.6b), taking ranks 21-60 from each, stored in
+# data/hard_negatives_4src_merged.json. 15 negatives are sampled once per
+# query and shared across its positive skills.
+#
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 \
+#       --master_port=29500 train/reranker-ft/train.py \
+#       --config train/reranker-ft/configs/qwen3-reranker-0.6b-sft-bce-4src-neg15.yaml
+
+model: Qwen/Qwen3-Reranker-0.6B
+output_dir: outputs/qwen3-reranker-0.6b-sft-bce-4src-neg15
+max_seq_length: 8192
+batch_size: 96
+grad_accum: 1
+lr: 2.0e-5
+warmup_ratio: 0.1
+epochs: 1
+eval_steps: 100
+save_steps: 100
+logging_steps: 10
+bf16: true
+seed: 42
+
+loss_type: bce
+merge_queries: false
+per_positive_negatives: true
+random_neg_sampling: false
+shared_neg_sampling: true
+load_best_model_at_end: true
+
+hard_negatives_file: data/hard_negatives_4src_merged.json
+hard_neg_skip_top: 0
+hard_neg_top_k: null
+num_negatives: 15
+
+eval_max_queries: null
+eval_batch_size: 64
+
+early_stopping_patience: 0
+early_stopping_min_delta: 0.001
+
+wandb_run: skillret-reranker-0.6b-sft-bce-4src-neg15
