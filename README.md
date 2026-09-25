@@ -126,17 +126,6 @@ NUM_GPUS=8 bash scripts/run_eval_rerank.sh
 
 All training scripts load data from the HuggingFace dataset automatically (no manual download needed). Models are specified by their HuggingFace IDs and downloaded on first use.
 
-### Run all training (sequential)
-
-```bash
-nohup bash train/run_all.sh > train/run_all.log 2>&1 &
-```
-
-This runs all three phases sequentially with GPU cleanup between runs:
-1. SkillRet-Embedding-0.6B (~5h on 4x GPU)
-2. SkillRet-Embedding-8B (~16h on 4x GPU)
-3. SkillRet-Reranker-0.6B (~6h on 8x GPU, including hard negative mining from SkillRet-Embedding-0.6B)
-
 ### Embedding model fine-tuning
 
 Fine-tune embedding models with in-batch Multiple Negatives Ranking Loss:
@@ -235,9 +224,8 @@ skillret-benchmark/
 ├── train/                       # Fine-tuning code
 │   ├── 4gpu-qwen3-0.6b/        # SkillRet-Embedding-0.6B training
 │   ├── 4gpu-qwen3-8b/          # SkillRet-Embedding-8B training
-│   ├── reranker-ft/             # SkillRet-Reranker-0.6B SFT training
-│   │   └── configs/             # Training YAML configs
-│   └── run_all.sh               # Run all training sequentially
+│   └── reranker-ft/             # SkillRet-Reranker-0.6B SFT training
+│       └── configs/             # Training YAML configs
 ├── scripts/                     # Evaluation orchestration
 │   ├── run_eval_embedding.sh    # Multi-GPU embedding eval
 │   └── run_eval_rerank.sh       # Multi-GPU reranking eval
