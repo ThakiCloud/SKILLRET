@@ -50,9 +50,8 @@ The benchmark dataset is hosted on HuggingFace:
 > **Dataset version note.** The test split was revised after the paper's original
 > evaluation. The published dataset now contains 6,006 test skills, 4,392 test queries
 > and 7,187 test labels; the original evaluation used 6,660 / 4,997 / 8,347. Benchmark
-> scores further down this page were produced on that **original** split and are not
-> convertible to the current one — do not compare the two directly. The train split is
-> unchanged.
+> scores further down this page use the **current** split, matching the paper. Scores
+> from the two splits are not directly comparable. The train split is unchanged.
 >
 > The Hub head is mutable, so an unpinned run is not reproducible. Pin the revision you
 > evaluate on (see [Loading the data](#loading-the-data)). The study *Where
