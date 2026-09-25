@@ -1189,7 +1189,7 @@ def main():
         if not emb_model:
             raise ValueError(
                 "Set 'embedding_model' in config for hard-negative mining "
-                "(e.g. Thaki/SkillRet-Embedding-8B)"
+                "(e.g. ThakiCloud/SKILLRET-Embedding-8B)"
             )
         model_base = os.environ.get("MODEL_BASE_DIR", "")
         if model_base:
